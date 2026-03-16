@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { ref, watch } from 'vue';
 
 const isElectron = typeof window !== 'undefined' && window.electronAPI;
 
@@ -7,6 +7,7 @@ async function loadData(key, fallback) {
     const data = await window.electronAPI.store.get(key);
     return data ?? fallback;
   }
+
   const raw = localStorage.getItem(`wb_${key}`);
   return raw ? JSON.parse(raw) : fallback;
 }
@@ -14,30 +15,29 @@ async function loadData(key, fallback) {
 async function saveData(key, data) {
   if (isElectron) {
     await window.electronAPI.store.set(key, data);
-  } else {
-    localStorage.setItem(`wb_${key}`, JSON.stringify(data));
+    return;
   }
+
+  localStorage.setItem(`wb_${key}`, JSON.stringify(data));
 }
 
 export function usePersistentState(key, fallback) {
-  const [state, setState] = useState(fallback);
-  const [loaded, setLoaded] = useState(false);
+  const state = ref(fallback);
+  const loaded = ref(false);
 
-  useEffect(() => {
-    loadData(key, fallback).then((data) => {
-      setState(data);
-      setLoaded(true);
-    });
-  }, [key]);
+  loadData(key, fallback).then((data) => {
+    state.value = data;
+    loaded.value = true;
+  });
 
-  const update = useCallback(
-    (newState) => {
-      const value = typeof newState === 'function' ? newState(state) : newState;
-      setState(value);
+  watch(
+    state,
+    (value) => {
+      if (!loaded.value) return;
       saveData(key, value);
     },
-    [key, state]
+    { deep: true }
   );
 
-  return [state, update, loaded];
+  return { state, loaded };
 }

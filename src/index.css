@@ -10,6 +10,7 @@
   --bg-primary: #0f0f13;
   --bg-secondary: #1a1a24;
   --bg-card: #1e1e2e;
+  --bg-card-soft: rgba(30, 30, 46, 0.82);
   --bg-hover: #262638;
   --bg-active: #2d2d44;
   --text-primary: #e4e4ef;
@@ -31,9 +32,24 @@
 html, body, #root {
   height: 100%;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--bg-primary);
+  background:
+    radial-gradient(circle at top left, rgba(108, 92, 231, 0.12), transparent 22%),
+    linear-gradient(180deg, #12131a 0%, #0f0f13 100%);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+}
+
+button {
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
 }
 
 ::-webkit-scrollbar {
@@ -71,6 +87,144 @@ html, body, #root {
 .ant-modal,
 .ant-card,
 .ant-table,
-.ant-tag {
+.ant-tag,
+.ant-segmented,
+.ant-checkbox-wrapper,
+.ant-calendar {
   -webkit-app-region: no-drag;
+}
+
+.ant-layout {
+  background: transparent !important;
+}
+
+.ant-card {
+  background: var(--bg-card-soft) !important;
+  border-color: rgba(162, 155, 254, 0.12) !important;
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.22);
+}
+
+.ant-card .ant-card-head {
+  border-bottom-color: rgba(162, 155, 254, 0.08);
+}
+
+.ant-card .ant-card-head-title,
+.ant-card .ant-card-extra,
+.ant-statistic,
+.ant-statistic-content,
+.ant-statistic-content-value,
+.ant-statistic-content-suffix,
+.ant-empty-description,
+.ant-typography {
+  color: var(--text-primary);
+}
+
+.ant-btn-primary {
+  box-shadow: 0 10px 24px rgba(108, 92, 231, 0.26);
+}
+
+.ant-btn-default,
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-select-selector,
+.ant-picker,
+.ant-segmented,
+.ant-modal-content,
+.ant-table,
+.ant-table-container,
+.ant-table-thead > tr > th,
+.ant-table-tbody > tr > td,
+.ant-calendar,
+.ant-calendar-header {
+  background: rgba(255, 255, 255, 0.02) !important;
+  border-color: rgba(162, 155, 254, 0.12) !important;
+}
+
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-select-selector,
+.ant-picker,
+.ant-segmented,
+.ant-modal-content {
+  border-radius: 14px !important;
+}
+
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-affix-wrapper input,
+.ant-select-selection-item,
+.ant-select-selection-placeholder,
+.ant-picker,
+.ant-picker-input > input,
+.ant-modal-title,
+.ant-modal-close,
+.ant-select-dropdown,
+.ant-select-item,
+.ant-table-cell,
+.ant-calendar-date-content,
+.ant-calendar-date-value {
+  color: var(--text-primary) !important;
+}
+
+.ant-input::placeholder,
+.ant-select-selection-placeholder,
+.ant-picker-input > input::placeholder {
+  color: var(--text-muted) !important;
+}
+
+.ant-menu.ant-menu-dark {
+  background: transparent !important;
+}
+
+.ant-menu-dark .ant-menu-item {
+  margin: 6px 12px !important;
+  width: auto !important;
+  border-radius: 14px;
+  color: var(--text-secondary) !important;
+}
+
+.ant-menu-dark .ant-menu-item-selected {
+  background: linear-gradient(135deg, rgba(108, 92, 231, 0.22), rgba(108, 92, 231, 0.1)) !important;
+  color: #fff !important;
+  box-shadow: inset 0 0 0 1px rgba(162, 155, 254, 0.12);
+}
+
+.ant-menu-dark .ant-menu-item:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: #fff !important;
+}
+
+.ant-table-tbody > tr:hover > td {
+  background: rgba(108, 92, 231, 0.06) !important;
+}
+
+.ant-modal-mask {
+  backdrop-filter: blur(8px);
+  background: rgba(3, 6, 18, 0.56) !important;
+}
+
+.ant-segmented-item-selected {
+  background: rgba(108, 92, 231, 0.22) !important;
+  color: #fff !important;
+}
+
+.icon-button {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: var(--text-muted);
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.icon-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.icon-button.danger:hover {
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--danger);
 }
