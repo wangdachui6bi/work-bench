@@ -17,6 +17,23 @@
     </div>
 
     <a-card class="wb-card quick-card">
+      <div class="sync-banner" :class="{ local: !syncConfig.enabled }">
+        <div class="sync-copy">
+          <CloudOutlined />
+          <div>
+            <div class="sync-title">
+              {{ syncConfig.enabled ? '云端待办已接入' : '当前使用本地待办' }}
+            </div>
+            <div class="sync-desc">
+              {{ syncMessage }}
+            </div>
+          </div>
+        </div>
+        <a-button v-if="syncConfig.enabled" :loading="loading" @click="refreshFromServer">
+          刷新
+        </a-button>
+      </div>
+
       <div class="quick-add">
         <a-input
           v-model:value="quickInput"
@@ -29,6 +46,36 @@
       </div>
     </a-card>
 
+    <a-card class="wb-card quick-card">
+      <div class="feishu-head">
+        <div class="sync-copy">
+          <RobotOutlined />
+          <div>
+            <div class="sync-title">飞书机器人提醒</div>
+            <div class="sync-desc">{{ feishuMessage }}</div>
+          </div>
+        </div>
+        <a-switch v-model:checked="feishuSettings.autoEnabled" checked-children="自动提醒" un-checked-children="手动" />
+      </div>
+
+      <div class="feishu-grid">
+        <a-input
+          v-model:value="feishuSettings.webhook"
+          placeholder="粘贴飞书机器人 webhook 地址"
+        />
+        <div class="feishu-fixed-time">
+          每天 09:30 自动发送今日待办
+        </div>
+      </div>
+
+      <div class="feishu-actions">
+        <a-button @click="saveFeishuConfig">保存配置</a-button>
+        <a-button @click="sendTestMessage">测试消息</a-button>
+        <a-button type="primary" ghost @click="sendTodaySummary">发送今日待办</a-button>
+        <a-button danger ghost @click="sendOverdueSummary">发送逾期待办</a-button>
+      </div>
+    </a-card>
+
     <div class="toolbar">
       <a-segmented v-model:value="viewMode" :options="viewOptions" />
       <a-select
@@ -37,6 +84,9 @@
         :options="filterOptions"
         style="width: 120px;"
       />
+      <a-button v-if="completedCount > 0" @click="clearCompleted">
+        清除已完成
+      </a-button>
       <a-typography-text class="toolbar-meta">共 {{ filteredTodos.length }} 条</a-typography-text>
     </div>
 
@@ -123,17 +173,33 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import dayjs from 'dayjs';
 import { message } from 'ant-design-vue';
 import { v4 as uuid } from 'uuid';
-import { usePersistentState } from '../store/useStore';
+import {
+  getFeishuTodoSettings,
+  markFeishuReminderSent,
+  getFeishuSentLog,
+  saveFeishuTodoSettings,
+} from '../store/feishuStore';
+import {
+  clearCompletedTodos,
+  createTodo,
+  deleteTodoById,
+  fetchTodos,
+  getTodoSyncConfig,
+  toggleTodoDone,
+} from '../store/todoCloudStore';
 import {
   CalendarOutlined,
+  BellOutlined,
   CheckSquareOutlined,
+  CloudOutlined,
   ClockCircleOutlined,
   DeleteOutlined,
   PlusOutlined,
+  RobotOutlined,
 } from '@ant-design/icons-vue';
 
 const priorityOptions = [
@@ -164,13 +230,22 @@ const emptyForm = () => ({
   priority: 'medium',
 });
 
-const { state: todos } = usePersistentState('todos', []);
+const todos = ref([]);
 const modalOpen = ref(false);
 const viewMode = ref('list');
 const selectedDate = ref(dayjs());
 const filter = ref('all');
 const quickInput = ref('');
+const loading = ref(false);
+const syncConfig = getTodoSyncConfig();
+const syncMessage = ref(syncConfig.enabled ? '正在连接待办服务...' : '未配置服务端，新增和删除仅保存在当前设备');
+const feishuSettings = reactive({
+  webhook: '',
+  autoEnabled: false,
+});
+const feishuMessage = ref('填入机器人 webhook 后，可以把今日待办推送到飞书');
 const form = reactive(emptyForm());
+let autoReminderTimer = null;
 
 const today = computed(() => dayjs().format('YYYY-MM-DD'));
 
@@ -194,6 +269,8 @@ const filteredTodos = computed(() => {
   });
 });
 
+const completedCount = computed(() => todos.value.filter((item) => item.done).length);
+
 const todosByDate = computed(() => {
   const map = {};
   todos.value.forEach((item) => {
@@ -208,11 +285,64 @@ function resetForm() {
   Object.assign(form, emptyForm());
 }
 
-function handleAddQuick() {
+async function loadTodos({ silent = false } = {}) {
+  try {
+    loading.value = true;
+    if (!silent) {
+      syncMessage.value = syncConfig.enabled ? '正在从服务端刷新待办...' : syncMessage.value;
+    }
+    todos.value = await fetchTodos();
+    if (syncConfig.enabled) {
+      syncMessage.value = `已连接服务端，共 ${todos.value.length} 条待办`;
+    }
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '加载待办失败';
+    syncMessage.value = text;
+    message.error(text);
+  } finally {
+    loading.value = false;
+  }
+}
+
+onMounted(() => {
+  loadTodos({ silent: true });
+  getFeishuTodoSettings().then((settings) => {
+    Object.assign(feishuSettings, settings);
+    if (feishuSettings.webhook) {
+      feishuMessage.value = feishuSettings.autoEnabled
+        ? (syncConfig.enabled
+          ? '飞书自动提醒已开启，服务端会在每天 09:30 推送今日待办'
+          : '飞书自动提醒已开启，应用运行期间会在每天 09:30 推送今日待办')
+        : '飞书机器人已配置，可手动发送待办摘要';
+    }
+  });
+
+  if (!syncConfig.enabled) {
+    autoReminderTimer = window.setInterval(() => {
+      checkAutoFeishuReminders({ silent: true });
+    }, 60 * 1000);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (autoReminderTimer) {
+    window.clearInterval(autoReminderTimer);
+  }
+});
+
+watch(
+  () => todos.value,
+  () => {
+    checkAutoFeishuReminders({ silent: true });
+  },
+  { deep: true }
+);
+
+async function handleAddQuick() {
   if (!quickInput.value.trim()) return;
 
-  todos.value = [
-    {
+  try {
+    todos.value = await createTodo({
       id: uuid(),
       title: quickInput.value.trim(),
       date: today.value,
@@ -220,18 +350,22 @@ function handleAddQuick() {
       priority: 'medium',
       done: false,
       createdAt: new Date().toISOString(),
-    },
-    ...todos.value,
-  ];
-  quickInput.value = '';
-  message.success('已添加到今日待办');
+    });
+    quickInput.value = '';
+    syncMessage.value = syncConfig.enabled ? '已添加并同步到服务端' : '已添加到本地待办';
+    message.success('已添加到今日待办');
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '添加失败';
+    syncMessage.value = text;
+    message.error(text);
+  }
 }
 
-function handleSave() {
+async function handleSave() {
   if (!form.title.trim()) return message.error('请输入待办内容');
 
-  todos.value = [
-    {
+  try {
+    todos.value = await createTodo({
       id: uuid(),
       title: form.title.trim(),
       date: form.date ? form.date.format('YYYY-MM-DD') : today.value,
@@ -239,12 +373,16 @@ function handleSave() {
       priority: form.priority || 'medium',
       done: false,
       createdAt: new Date().toISOString(),
-    },
-    ...todos.value,
-  ];
+    });
 
-  message.success('已添加');
-  closeModal();
+    syncMessage.value = syncConfig.enabled ? '待办已写入服务端' : '待办已保存到本地';
+    message.success('已添加');
+    closeModal();
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '添加失败';
+    syncMessage.value = text;
+    message.error(text);
+  }
 }
 
 function closeModal() {
@@ -252,13 +390,187 @@ function closeModal() {
   resetForm();
 }
 
-function toggleDone(id) {
-  todos.value = todos.value.map((item) => (item.id === id ? { ...item, done: !item.done } : item));
+async function toggleDone(id) {
+  try {
+    todos.value = await toggleTodoDone(id);
+    syncMessage.value = syncConfig.enabled ? '待办状态已同步更新' : '本地状态已更新';
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '更新失败';
+    syncMessage.value = text;
+    message.error(text);
+  }
 }
 
-function handleDelete(id) {
-  todos.value = todos.value.filter((item) => item.id !== id);
-  message.success('已删除');
+async function handleDelete(id) {
+  try {
+    todos.value = await deleteTodoById(id);
+    syncMessage.value = syncConfig.enabled ? '待办已从服务端删除' : '待办已从本地删除';
+    message.success('已删除');
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '删除失败';
+    syncMessage.value = text;
+    message.error(text);
+  }
+}
+
+async function clearCompleted() {
+  try {
+    todos.value = await clearCompletedTodos();
+    syncMessage.value = syncConfig.enabled ? '已清除服务端已完成待办' : '已清除本地已完成待办';
+    message.success('已清除已完成待办');
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '清除失败';
+    syncMessage.value = text;
+    message.error(text);
+  }
+}
+
+function refreshFromServer() {
+  loadTodos();
+}
+
+function buildTodoLines(items) {
+  return items.map((todo, index) => {
+    const priority = priorityMap[todo.priority]?.label || '中优先';
+    const timeText = todo.time ? ` ${todo.time}` : '';
+    return `${index + 1}. ${todo.title}\n日期：${todo.date}${timeText}｜优先级：${priority}`;
+  }).join('\n\n');
+}
+
+async function dispatchFeishuMessage(title, text) {
+  const webhook = feishuSettings.webhook.trim();
+  if (!webhook) {
+    throw new Error('请先配置飞书机器人 webhook');
+  }
+
+  if (window.electronAPI?.feishu?.send) {
+    return window.electronAPI.feishu.send({ webhook, title, text });
+  }
+
+  const response = await fetch(webhook, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      msg_type: 'text',
+      content: {
+        text: `${title}\n${text}`,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `飞书请求失败: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+async function saveFeishuConfig() {
+  try {
+    await saveFeishuTodoSettings({ ...feishuSettings });
+    feishuMessage.value = feishuSettings.autoEnabled
+      ? (syncConfig.enabled
+        ? '飞书配置已保存，服务端将于每天 09:30 自动发送今日待办'
+        : '飞书配置已保存，应用运行时会在每天 09:30 自动发送今日待办')
+      : '飞书配置已保存，可手动发送待办摘要';
+    message.success('飞书配置已保存');
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '保存飞书配置失败';
+    feishuMessage.value = text;
+    message.error(text);
+  }
+}
+
+async function sendTestMessage() {
+  try {
+    await dispatchFeishuMessage(
+      'WorkBench 测试提醒',
+      `机器人连接成功\n时间：${dayjs().format('YYYY-MM-DD HH:mm')}`
+    );
+    feishuMessage.value = '测试消息已发送，请去飞书确认机器人是否收到';
+    message.success('测试消息已发送');
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '发送测试消息失败';
+    feishuMessage.value = text;
+    message.error(text);
+  }
+}
+
+async function sendTodaySummary() {
+  const todayItems = todos.value.filter((item) => !item.done && item.date === today.value);
+  if (todayItems.length === 0) {
+    return message.info('今天没有未完成待办');
+  }
+
+  try {
+    await dispatchFeishuMessage('今日待办摘要', buildTodoLines(todayItems));
+    feishuMessage.value = `今日待办已发送，共 ${todayItems.length} 条`;
+    message.success('今日待办已发送到飞书');
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '发送今日待办失败';
+    feishuMessage.value = text;
+    message.error(text);
+  }
+}
+
+async function sendOverdueSummary() {
+  const overdueItems = todos.value.filter((item) => !item.done && item.date < today.value);
+  if (overdueItems.length === 0) {
+    return message.info('当前没有逾期待办');
+  }
+
+  try {
+    await dispatchFeishuMessage('逾期待办提醒', buildTodoLines(overdueItems));
+    feishuMessage.value = `逾期待办已发送，共 ${overdueItems.length} 条`;
+    message.success('逾期待办已发送到飞书');
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '发送逾期待办失败';
+    feishuMessage.value = text;
+    message.error(text);
+  }
+}
+
+async function checkAutoFeishuReminders({ silent = false } = {}) {
+  if (syncConfig.enabled) {
+    return;
+  }
+
+  if (!feishuSettings.autoEnabled || !feishuSettings.webhook.trim()) {
+    return;
+  }
+
+  const sentLog = await getFeishuSentLog();
+  const now = dayjs();
+  const reminderKey = `daily-summary:${today.value}`;
+  if (sentLog[reminderKey]) {
+    return;
+  }
+
+  const summaryAt = dayjs(`${today.value}T09:30`);
+  if (now.isBefore(summaryAt)) {
+    return;
+  }
+
+  const dueItems = todos.value.filter((item) => !item.done && item.date === today.value);
+  if (dueItems.length === 0) {
+    return;
+  }
+
+  try {
+    await dispatchFeishuMessage('今日待办摘要', buildTodoLines(dueItems));
+    await markFeishuReminderSent(reminderKey);
+
+    if (!silent) {
+      feishuMessage.value = `已自动发送今日待办，共 ${dueItems.length} 条`;
+    }
+  } catch (error) {
+    const text = error instanceof Error ? error.message : '自动提醒发送失败';
+    feishuMessage.value = text;
+    if (!silent) {
+      message.error(text);
+    }
+  }
 }
 </script>
 
@@ -278,6 +590,85 @@ function handleDelete(id) {
 
 .quick-card {
   margin-bottom: 16px;
+}
+
+.feishu-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.feishu-grid {
+  display: grid;
+  grid-template-columns: 1fr 160px;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.feishu-fixed-time {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: rgba(22, 119, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.feishu-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sync-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(252, 211, 77, 0.16), rgba(249, 115, 22, 0.08));
+  border: 1px solid rgba(249, 115, 22, 0.18);
+}
+
+.sync-banner.local {
+  background: linear-gradient(135deg, rgba(148, 163, 184, 0.16), rgba(71, 85, 105, 0.08));
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+.sync-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.sync-title {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.sync-desc {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 980px) {
+  .feishu-head {
+    flex-direction: column;
+  }
+
+  .feishu-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .quick-add {

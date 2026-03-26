@@ -39,7 +39,7 @@
 </template>
 
 <script setup>
-import { computed, markRaw, ref } from 'vue';
+import { computed, markRaw, onBeforeUnmount, onMounted, ref } from 'vue';
 import { theme } from 'ant-design-vue';
 import zhCN from 'ant-design-vue/es/locale/zh_CN';
 import {
@@ -79,6 +79,27 @@ const activeKey = ref('dashboard');
 const collapsed = ref(false);
 const selectedKeys = computed(() => [activeKey.value]);
 const activePage = computed(() => pageMap[activeKey.value]);
+
+let removeNavigateListener = null;
+
+onMounted(() => {
+  if (!window.electronAPI?.app?.onNavigate) {
+    return;
+  }
+
+  removeNavigateListener = window.electronAPI.app.onNavigate((key) => {
+    if (pageMap[key]) {
+      activeKey.value = key;
+    }
+  });
+});
+
+onBeforeUnmount(() => {
+  if (removeNavigateListener) {
+    removeNavigateListener();
+    removeNavigateListener = null;
+  }
+});
 
 const themeConfig = {
   algorithm: theme.darkAlgorithm,

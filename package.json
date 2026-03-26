@@ -4,9 +4,27 @@
   "description": "Desktop Workbench - 桌面工作台",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "concurrently -k \"vite --host 127.0.0.1 --port 4173 --strictPort\" \"wait-on http://127.0.0.1:4173 && electron .\"",
     "build": "vite build && electron-builder",
     "preview": "vite preview"
+  },
+  "build": {
+    "appId": "com.workbench.desktop",
+    "productName": "work-bench",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/renderer/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
   },
   "keywords": [],
   "author": "",
