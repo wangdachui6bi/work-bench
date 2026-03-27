@@ -173,15 +173,14 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import dayjs from 'dayjs';
 import { message } from 'ant-design-vue';
 import { v4 as uuid } from 'uuid';
 import {
   getFeishuTodoSettings,
-  markFeishuReminderSent,
-  getFeishuSentLog,
   saveFeishuTodoSettings,
+  sendFeishuBotMessage,
 } from '../store/feishuStore';
 import {
   clearCompletedTodos,
@@ -245,7 +244,6 @@ const feishuSettings = reactive({
 });
 const feishuMessage = ref('填入机器人 webhook 后，可以把今日待办推送到飞书');
 const form = reactive(emptyForm());
-let autoReminderTimer = null;
 
 const today = computed(() => dayjs().format('YYYY-MM-DD'));
 
@@ -311,32 +309,12 @@ onMounted(() => {
     if (feishuSettings.webhook) {
       feishuMessage.value = feishuSettings.autoEnabled
         ? (syncConfig.enabled
-          ? '飞书自动提醒已开启，服务端会在每天 09:30 推送今日待办'
-          : '飞书自动提醒已开启，应用运行期间会在每天 09:30 推送今日待办')
+          ? '飞书自动提醒已开启，应用运行时会到点检查提醒，09:30 汇总由服务端去重推送'
+          : '飞书自动提醒已开启，应用运行时会自动推送到点待办和 09:30 汇总')
         : '飞书机器人已配置，可手动发送待办摘要';
     }
   });
-
-  if (!syncConfig.enabled) {
-    autoReminderTimer = window.setInterval(() => {
-      checkAutoFeishuReminders({ silent: true });
-    }, 60 * 1000);
-  }
 });
-
-onBeforeUnmount(() => {
-  if (autoReminderTimer) {
-    window.clearInterval(autoReminderTimer);
-  }
-});
-
-watch(
-  () => todos.value,
-  () => {
-    checkAutoFeishuReminders({ silent: true });
-  },
-  { deep: true }
-);
 
 async function handleAddQuick() {
   if (!quickInput.value.trim()) return;
@@ -438,32 +416,11 @@ function buildTodoLines(items) {
 }
 
 async function dispatchFeishuMessage(title, text) {
-  const webhook = feishuSettings.webhook.trim();
-  if (!webhook) {
-    throw new Error('请先配置飞书机器人 webhook');
-  }
-
-  if (window.electronAPI?.feishu?.send) {
-    return window.electronAPI.feishu.send({ webhook, title, text });
-  }
-
-  const response = await fetch(webhook, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      msg_type: 'text',
-      content: {
-        text: `${title}\n${text}`,
-      },
-    }),
+  return sendFeishuBotMessage({
+    webhook: feishuSettings.webhook.trim(),
+    title,
+    text,
   });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(body || `飞书请求失败: ${response.status}`);
-  }
-
-  return response.json();
 }
 
 async function saveFeishuConfig() {
@@ -471,8 +428,8 @@ async function saveFeishuConfig() {
     await saveFeishuTodoSettings({ ...feishuSettings });
     feishuMessage.value = feishuSettings.autoEnabled
       ? (syncConfig.enabled
-        ? '飞书配置已保存，服务端将于每天 09:30 自动发送今日待办'
-        : '飞书配置已保存，应用运行时会在每天 09:30 自动发送今日待办')
+        ? '飞书配置已保存，应用运行时会检查到点待办，09:30 汇总由服务端去重推送'
+        : '飞书配置已保存，应用运行时会自动推送到点待办和 09:30 汇总')
       : '飞书配置已保存，可手动发送待办摘要';
     message.success('飞书配置已保存');
   } catch (error) {
@@ -528,48 +485,6 @@ async function sendOverdueSummary() {
     const text = error instanceof Error ? error.message : '发送逾期待办失败';
     feishuMessage.value = text;
     message.error(text);
-  }
-}
-
-async function checkAutoFeishuReminders({ silent = false } = {}) {
-  if (syncConfig.enabled) {
-    return;
-  }
-
-  if (!feishuSettings.autoEnabled || !feishuSettings.webhook.trim()) {
-    return;
-  }
-
-  const sentLog = await getFeishuSentLog();
-  const now = dayjs();
-  const reminderKey = `daily-summary:${today.value}`;
-  if (sentLog[reminderKey]) {
-    return;
-  }
-
-  const summaryAt = dayjs(`${today.value}T09:30`);
-  if (now.isBefore(summaryAt)) {
-    return;
-  }
-
-  const dueItems = todos.value.filter((item) => !item.done && item.date === today.value);
-  if (dueItems.length === 0) {
-    return;
-  }
-
-  try {
-    await dispatchFeishuMessage('今日待办摘要', buildTodoLines(dueItems));
-    await markFeishuReminderSent(reminderKey);
-
-    if (!silent) {
-      feishuMessage.value = `已自动发送今日待办，共 ${dueItems.length} 条`;
-    }
-  } catch (error) {
-    const text = error instanceof Error ? error.message : '自动提醒发送失败';
-    feishuMessage.value = text;
-    if (!silent) {
-      message.error(text);
-    }
   }
 }
 </script>

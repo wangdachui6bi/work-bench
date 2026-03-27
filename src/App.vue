@@ -56,6 +56,7 @@ import TodoManager from './pages/TodoManager.vue';
 import QuickNotes from './pages/QuickNotes.vue';
 import Bookmarks from './pages/Bookmarks.vue';
 import PomodoroTimer from './pages/PomodoroTimer.vue';
+import { startFeishuTodoScheduler } from './store/feishuScheduler';
 
 const menuItems = [
   { key: 'dashboard', icon: markRaw(DashboardOutlined), label: '仪表盘' },
@@ -81,8 +82,11 @@ const selectedKeys = computed(() => [activeKey.value]);
 const activePage = computed(() => pageMap[activeKey.value]);
 
 let removeNavigateListener = null;
+let stopFeishuScheduler = null;
 
 onMounted(() => {
+  stopFeishuScheduler = startFeishuTodoScheduler();
+
   if (!window.electronAPI?.app?.onNavigate) {
     return;
   }
@@ -95,6 +99,11 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (stopFeishuScheduler) {
+    stopFeishuScheduler();
+    stopFeishuScheduler = null;
+  }
+
   if (removeNavigateListener) {
     removeNavigateListener();
     removeNavigateListener = null;

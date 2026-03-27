@@ -28,6 +28,48 @@ async function saveData(key, data) {
   localStorage.setItem(`wb_${key}`, JSON.stringify(data));
 }
 
+export async function sendFeishuBotMessage({ webhook, title, text }) {
+  const nextWebhook = String(webhook || '').trim();
+  const nextTitle = String(title || 'WorkBench 提醒').trim();
+  const nextText = String(text || '').trim();
+
+  if (!nextWebhook) {
+    throw new Error('请先配置飞书机器人 webhook');
+  }
+
+  if (!nextText) {
+    throw new Error('提醒内容为空');
+  }
+
+  if (window.electronAPI?.feishu?.send) {
+    return window.electronAPI.feishu.send({
+      webhook: nextWebhook,
+      title: nextTitle,
+      text: nextText,
+    });
+  }
+
+  const response = await fetch(nextWebhook, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      msg_type: 'text',
+      content: {
+        text: `${nextTitle}\n${nextText}`,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `飞书请求失败: ${response.status}`);
+  }
+
+  return response.json();
+}
+
 async function requestServer(path, init) {
   const syncConfig = getTodoSyncConfig();
   const serverUrl = syncConfig.serverUrl || '';
@@ -59,10 +101,12 @@ export async function getFeishuTodoSettings() {
   if (syncConfig.enabled) {
     try {
       const result = await requestServer('/api/sync/feishu/settings');
-      return {
+      const next = {
         ...defaultSettings,
         ...(result?.settings || {}),
       };
+      await saveData(SETTINGS_KEY, next);
+      return next;
     } catch (error) {
       console.warn('[feishu] load server settings failed', error);
     }
@@ -81,20 +125,34 @@ export async function saveFeishuTodoSettings(settings) {
     ...(settings || {}),
   };
 
+  await saveData(SETTINGS_KEY, next);
+
   const syncConfig = getTodoSyncConfig();
   if (syncConfig.enabled) {
     const result = await requestServer('/api/sync/feishu/settings', {
       method: 'PUT',
       body: JSON.stringify(next),
     });
-    return {
+    const saved = {
       ...defaultSettings,
       ...(result?.settings || next),
     };
+    await saveData(SETTINGS_KEY, saved);
+    return saved;
   }
 
-  await saveData(SETTINGS_KEY, next);
   return next;
+}
+
+export async function triggerServerFeishuCheck() {
+  const syncConfig = getTodoSyncConfig();
+  if (!syncConfig.enabled) {
+    return { sent: 0, items: [] };
+  }
+
+  return requestServer('/api/sync/feishu/check', {
+    method: 'POST',
+  });
 }
 
 export async function getFeishuSentLog() {
