@@ -64,7 +64,7 @@
           placeholder="粘贴飞书机器人 webhook 地址"
         />
         <div class="feishu-fixed-time">
-          每天 09:30 自动发送今日待办
+          {{ syncConfig.enabled ? '服务端自动推送到点待办，并在每天 09:30 汇总今日待办' : '每天 09:30 自动发送今日待办' }}
         </div>
       </div>
 
@@ -181,6 +181,7 @@ import {
   getFeishuTodoSettings,
   saveFeishuTodoSettings,
   sendFeishuBotMessage,
+  triggerServerFeishuCheck,
 } from '../store/feishuStore';
 import {
   clearCompletedTodos,
@@ -309,7 +310,7 @@ onMounted(() => {
     if (feishuSettings.webhook) {
       feishuMessage.value = feishuSettings.autoEnabled
         ? (syncConfig.enabled
-          ? '飞书自动提醒已开启，应用运行时会到点检查提醒，09:30 汇总由服务端去重推送'
+          ? '飞书自动提醒已开启，服务端会自动处理到点提醒和 09:30 今日待办摘要'
           : '飞书自动提醒已开启，应用运行时会自动推送到点待办和 09:30 汇总')
         : '飞书机器人已配置，可手动发送待办摘要';
     }
@@ -426,9 +427,12 @@ async function dispatchFeishuMessage(title, text) {
 async function saveFeishuConfig() {
   try {
     await saveFeishuTodoSettings({ ...feishuSettings });
+    if (syncConfig.enabled && feishuSettings.autoEnabled && feishuSettings.webhook.trim()) {
+      await triggerServerFeishuCheck();
+    }
     feishuMessage.value = feishuSettings.autoEnabled
       ? (syncConfig.enabled
-        ? '飞书配置已保存，应用运行时会检查到点待办，09:30 汇总由服务端去重推送'
+        ? '飞书配置已保存，服务端会自动处理到点提醒和 09:30 今日待办摘要'
         : '飞书配置已保存，应用运行时会自动推送到点待办和 09:30 汇总')
       : '飞书配置已保存，可手动发送待办摘要';
     message.success('飞书配置已保存');

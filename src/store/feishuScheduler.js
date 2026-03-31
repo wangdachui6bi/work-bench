@@ -73,13 +73,13 @@ async function runSchedulerCycle() {
       return;
     }
 
-    const todos = await fetchTodos();
-    await checkTimedReminders(settings, todos);
-
     if (getTodoSyncConfig().enabled) {
       await triggerServerFeishuCheck();
       return;
     }
+
+    const todos = await fetchTodos();
+    await checkTimedReminders(settings, todos);
 
     const today = dayjs().format('YYYY-MM-DD');
     const summaryAt = dayjs(`${today} 09:30`, 'YYYY-MM-DD HH:mm');
