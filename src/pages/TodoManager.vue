@@ -55,7 +55,13 @@
             <div class="sync-desc">{{ feishuMessage }}</div>
           </div>
         </div>
-        <a-switch v-model:checked="feishuSettings.autoEnabled" checked-children="自动提醒" un-checked-children="手动" />
+        <a-switch
+          v-model:checked="feishuSettings.autoEnabled"
+          :loading="savingAutoReminder"
+          checked-children="自动提醒"
+          un-checked-children="手动"
+          @change="handleAutoReminderChange"
+        />
       </div>
 
       <div class="feishu-grid">
@@ -181,7 +187,6 @@ import {
   getFeishuTodoSettings,
   saveFeishuTodoSettings,
   sendFeishuBotMessage,
-  triggerServerFeishuCheck,
 } from '../store/feishuStore';
 import {
   clearCompletedTodos,
@@ -243,7 +248,12 @@ const feishuSettings = reactive({
   webhook: '',
   autoEnabled: false,
 });
+const persistedFeishuSettings = ref({
+  webhook: '',
+  autoEnabled: false,
+});
 const feishuMessage = ref('填入机器人 webhook 后，可以把今日待办推送到飞书');
+const savingAutoReminder = ref(false);
 const form = reactive(emptyForm());
 
 const today = computed(() => dayjs().format('YYYY-MM-DD'));
@@ -307,6 +317,7 @@ onMounted(() => {
   loadTodos({ silent: true });
   getFeishuTodoSettings().then((settings) => {
     Object.assign(feishuSettings, settings);
+    persistedFeishuSettings.value = { ...settings };
     if (feishuSettings.webhook) {
       feishuMessage.value = feishuSettings.autoEnabled
         ? (syncConfig.enabled
@@ -426,10 +437,9 @@ async function dispatchFeishuMessage(title, text) {
 
 async function saveFeishuConfig() {
   try {
-    await saveFeishuTodoSettings({ ...feishuSettings });
-    if (syncConfig.enabled && feishuSettings.autoEnabled && feishuSettings.webhook.trim()) {
-      await triggerServerFeishuCheck();
-    }
+    const saved = await saveFeishuTodoSettings({ ...feishuSettings });
+    Object.assign(feishuSettings, saved);
+    persistedFeishuSettings.value = { ...saved };
     feishuMessage.value = feishuSettings.autoEnabled
       ? (syncConfig.enabled
         ? '飞书配置已保存，服务端会自动处理到点提醒和 09:30 今日待办摘要'
@@ -440,6 +450,33 @@ async function saveFeishuConfig() {
     const text = error instanceof Error ? error.message : '保存飞书配置失败';
     feishuMessage.value = text;
     message.error(text);
+  }
+}
+
+async function handleAutoReminderChange(checked) {
+  const previousAutoEnabled = persistedFeishuSettings.value.autoEnabled;
+  feishuSettings.autoEnabled = checked;
+  savingAutoReminder.value = true;
+
+  try {
+    const saved = await saveFeishuTodoSettings({
+      ...persistedFeishuSettings.value,
+      autoEnabled: checked,
+    });
+    persistedFeishuSettings.value = { ...saved };
+    feishuSettings.autoEnabled = saved.autoEnabled;
+    feishuMessage.value = saved.autoEnabled
+      ? (syncConfig.enabled
+        ? '已开启服务端自动提醒，到点后会由服务端发送'
+        : '已开启自动提醒，应用运行时会自动发送')
+      : '已关闭自动提醒，仍可手动发送待办摘要';
+  } catch (error) {
+    feishuSettings.autoEnabled = previousAutoEnabled;
+    const text = error instanceof Error ? error.message : '更新自动提醒失败';
+    feishuMessage.value = text;
+    message.error(text);
+  } finally {
+    savingAutoReminder.value = false;
   }
 }
 

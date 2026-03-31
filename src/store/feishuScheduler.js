@@ -5,7 +5,6 @@ import {
   getFeishuTodoSettings,
   markFeishuReminderSent,
   sendFeishuBotMessage,
-  triggerServerFeishuCheck,
 } from './feishuStore';
 
 let schedulerTimer = null;
@@ -68,13 +67,12 @@ async function runSchedulerCycle() {
 
   running = true;
   try {
-    const settings = await getFeishuTodoSettings();
-    if (!settings.autoEnabled || !settings.webhook.trim()) {
+    if (getTodoSyncConfig().enabled) {
       return;
     }
 
-    if (getTodoSyncConfig().enabled) {
-      await triggerServerFeishuCheck();
+    const settings = await getFeishuTodoSettings();
+    if (!settings.autoEnabled || !settings.webhook.trim()) {
       return;
     }
 
