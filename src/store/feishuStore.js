@@ -7,7 +7,27 @@ const isElectron = typeof window !== 'undefined' && window.electronAPI;
 const defaultSettings = {
   webhook: '',
   autoEnabled: false,
+  mentionUserId: '',
 };
+
+function escapeFeishuText(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+function buildFeishuText({ title, text, mentionUserId }) {
+  const parts = [String(title || '').trim(), String(text || '').trim()].filter(Boolean);
+  const nextMentionUserId = String(mentionUserId || '').trim();
+
+  if (nextMentionUserId) {
+    parts.push(`<at user_id="${escapeFeishuText(nextMentionUserId)}">${escapeFeishuText('你')}</at>`);
+  }
+
+  return parts.join('\n');
+}
 
 async function loadData(key, fallback) {
   if (isElectron) {
@@ -28,7 +48,7 @@ async function saveData(key, data) {
   localStorage.setItem(`wb_${key}`, JSON.stringify(data));
 }
 
-export async function sendFeishuBotMessage({ webhook, title, text }) {
+export async function sendFeishuBotMessage({ webhook, title, text, mentionUserId }) {
   const nextWebhook = String(webhook || '').trim();
   const nextTitle = String(title || 'WorkBench 提醒').trim();
   const nextText = String(text || '').trim();
@@ -46,6 +66,7 @@ export async function sendFeishuBotMessage({ webhook, title, text }) {
       webhook: nextWebhook,
       title: nextTitle,
       text: nextText,
+      mentionUserId: String(mentionUserId || '').trim(),
     });
   }
 
@@ -57,7 +78,11 @@ export async function sendFeishuBotMessage({ webhook, title, text }) {
     body: JSON.stringify({
       msg_type: 'text',
       content: {
-        text: `${nextTitle}\n${nextText}`,
+        text: buildFeishuText({
+          title: nextTitle,
+          text: nextText,
+          mentionUserId,
+        }),
       },
     }),
   });

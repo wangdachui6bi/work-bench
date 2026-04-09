@@ -51,6 +51,7 @@ async function checkTimedReminders(settings, todos) {
     webhook: settings.webhook,
     title: dueTodos.length === 1 ? '待办到时间了' : '有几条待办到时间了',
     text: buildTodoLines(dueTodos),
+    mentionUserId: settings.mentionUserId,
   });
 
   await Promise.all(
@@ -98,6 +99,7 @@ async function runSchedulerCycle() {
       webhook: settings.webhook,
       title: '今日待办摘要',
       text: buildTodoLines(todayItems),
+      mentionUserId: settings.mentionUserId,
     });
     await markFeishuReminderSent(reminderKey);
   } catch (error) {

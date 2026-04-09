@@ -44,6 +44,7 @@ async function sendFeishuBotMessage(payload) {
   const webhook = String(payload?.webhook || '').trim();
   const title = String(payload?.title || '工作台提醒').trim();
   const text = String(payload?.text || '').trim();
+  const mentionUserId = String(payload?.mentionUserId || '').trim();
 
   if (!webhook) {
     throw new Error('飞书机器人 webhook 未配置');
@@ -51,6 +52,11 @@ async function sendFeishuBotMessage(payload) {
 
   if (!text) {
     throw new Error('提醒内容为空');
+  }
+
+  const lines = [title, text];
+  if (mentionUserId) {
+    lines.push(`<at user_id="${mentionUserId.replaceAll('"', '&quot;')}">你</at>`);
   }
 
   const response = await fetch(webhook, {
@@ -61,7 +67,7 @@ async function sendFeishuBotMessage(payload) {
     body: JSON.stringify({
       msg_type: 'text',
       content: {
-        text: `${title}\n${text}`,
+        text: lines.join('\n'),
       },
     }),
   });
