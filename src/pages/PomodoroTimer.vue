@@ -13,14 +13,14 @@
     <a-row :gutter="[24, 24]">
       <a-col :xs="24" :md="14">
         <a-card class="wb-card timer-card">
-          <a-tag :color="isBreak ? 'green' : 'purple'" class="mode-tag">
-            <template v-if="isBreak">
+          <a-tag :color="isBreakMode ? 'green' : 'purple'" class="mode-tag">
+            <template v-if="isBreakMode">
               <CoffeeOutlined />
-              休息时间
+              {{ currentModeLabel }}
             </template>
             <template v-else>
               <ClockCircleOutlined />
-              专注时间
+              {{ currentModeLabel }}
             </template>
           </a-tag>
 
@@ -29,7 +29,7 @@
               type="circle"
               :percent="progress"
               :size="240"
-              :stroke-color="isBreak ? '#51cf66' : '#6c5ce7'"
+              :stroke-color="isBreakMode ? '#51cf66' : '#6c5ce7'"
               trail-color="var(--border)"
             >
               <template #format>
@@ -58,11 +58,51 @@
           <div class="timer-settings">
             <div>
               <a-typography-text class="setting-label">专注时长</a-typography-text>
-              <a-select v-model:value="workMinutes" :options="presets" :disabled="isRunning" style="width: 160px;" />
+              <a-input-number
+                v-model:value="settings.focusMinutes"
+                :min="1"
+                :max="180"
+                :precision="0"
+                :disabled="isRunning"
+                style="width: 140px;"
+                addon-after="分钟"
+              />
             </div>
             <div>
-              <a-typography-text class="setting-label">休息时长</a-typography-text>
-              <a-select v-model:value="breakMinutes" :options="breakPresets" :disabled="isRunning" style="width: 120px;" />
+              <a-typography-text class="setting-label">短休息</a-typography-text>
+              <a-input-number
+                v-model:value="settings.shortBreakMinutes"
+                :min="1"
+                :max="60"
+                :precision="0"
+                :disabled="isRunning"
+                style="width: 140px;"
+                addon-after="分钟"
+              />
+            </div>
+            <div>
+              <a-typography-text class="setting-label">长休息</a-typography-text>
+              <a-input-number
+                v-model:value="settings.longBreakMinutes"
+                :min="1"
+                :max="90"
+                :precision="0"
+                :disabled="isRunning"
+                style="width: 140px;"
+                addon-after="分钟"
+              />
+            </div>
+            <div>
+              <a-typography-text class="setting-label">长休息间隔</a-typography-text>
+              <a-input-number
+                v-model:value="settings.longBreakInterval"
+                :min="2"
+                :max="12"
+                :precision="0"
+                :disabled="isRunning"
+                style="width: 140px;"
+                addon-after="轮"
+              />
             </div>
           </div>
         </a-card>
@@ -88,6 +128,12 @@
             </a-col>
             <a-col :span="12">
               <a-statistic title="累计小时" :value="(stats.totalMinutes / 60).toFixed(1)" suffix="h" :value-style="{ color: '#74b9ff', fontWeight: 700 }" />
+            </a-col>
+            <a-col :span="12">
+              <a-statistic title="当前轮次" :value="focusStreak" suffix="轮" :value-style="{ color: '#a29bfe', fontWeight: 700 }" />
+            </a-col>
+            <a-col :span="12">
+              <a-statistic title="下次长休息" :value="sessionsUntilLongBreak" suffix="轮后" :value-style="{ color: '#51cf66', fontWeight: 700 }" />
             </a-col>
           </a-row>
         </a-card>
@@ -120,37 +166,45 @@ import {
 } from '@ant-design/icons-vue';
 import { usePersistentState } from '../store/useStore';
 
-const presets = [
-  { label: '25 分钟（标准）', value: 25 },
-  { label: '15 分钟（短）', value: 15 },
-  { label: '45 分钟（长）', value: 45 },
-  { label: '60 分钟', value: 60 },
-];
-
-const breakPresets = [
-  { label: '5 分钟', value: 5 },
-  { label: '10 分钟', value: 10 },
-  { label: '15 分钟', value: 15 },
-];
+const MODE_FOCUS = 'focus';
+const MODE_SHORT_BREAK = 'shortBreak';
+const MODE_LONG_BREAK = 'longBreak';
 
 const { state: pomodoroState } = usePersistentState('pomodoro_stats', {
   totalSessions: 0,
   totalMinutes: 0,
   todaySessions: 0,
   todayDate: '',
+  focusStreak: 0,
 });
 
-const workMinutes = ref(25);
-const breakMinutes = ref(5);
-const secondsLeft = ref(25 * 60);
+const { state: settingsState } = usePersistentState('pomodoro_settings', {
+  focusMinutes: 25,
+  shortBreakMinutes: 5,
+  longBreakMinutes: 20,
+  longBreakInterval: 4,
+});
+
+const settings = settingsState;
+const currentMode = ref(MODE_FOCUS);
+const secondsLeft = ref(settings.value.focusMinutes * 60);
 const isRunning = ref(false);
-const isBreak = ref(false);
 let timerId = null;
 
 const stats = computed(() => pomodoroState.value);
 const today = computed(() => new Date().toISOString().split('T')[0]);
-const totalSeconds = computed(() => (isBreak.value ? breakMinutes.value * 60 : workMinutes.value * 60));
-const progress = computed(() => ((totalSeconds.value - secondsLeft.value) / totalSeconds.value) * 100);
+const isBreakMode = computed(() => currentMode.value !== MODE_FOCUS);
+const focusStreak = computed(() => Number(stats.value.focusStreak || 0));
+const currentModeLabel = computed(() => {
+  if (currentMode.value === MODE_LONG_BREAK) return '长休息时间';
+  if (currentMode.value === MODE_SHORT_BREAK) return '短休息时间';
+  return '专注时间';
+});
+const totalSeconds = computed(() => getDurationMinutes(currentMode.value) * 60);
+const progress = computed(() => {
+  if (totalSeconds.value <= 0) return 0;
+  return ((totalSeconds.value - secondsLeft.value) / totalSeconds.value) * 100;
+});
 const formattedTime = computed(() => {
   const minutes = Math.floor(secondsLeft.value / 60);
   const seconds = secondsLeft.value % 60;
@@ -159,6 +213,11 @@ const formattedTime = computed(() => {
 const todaySessions = computed(() =>
   stats.value.todayDate === today.value ? stats.value.todaySessions : 0
 );
+const sessionsUntilLongBreak = computed(() => {
+  const interval = normalizePositiveInteger(settings.value.longBreakInterval, 4, 2, 12);
+  const completed = focusStreak.value % interval;
+  return completed === 0 ? interval : interval - completed;
+});
 
 watch(
   isRunning,
@@ -179,32 +238,61 @@ watch(secondsLeft, (value) => {
   isRunning.value = false;
   playNotification();
 
-  if (!isBreak.value) {
+  if (currentMode.value === MODE_FOCUS) {
+    const nextFocusStreak = focusStreak.value + 1;
+    const interval = normalizePositiveInteger(settings.value.longBreakInterval, 4, 2, 12);
     pomodoroState.value = {
       totalSessions: stats.value.totalSessions + 1,
-      totalMinutes: stats.value.totalMinutes + workMinutes.value,
+      totalMinutes: stats.value.totalMinutes + normalizePositiveInteger(settings.value.focusMinutes, 25, 1, 180),
       todaySessions: stats.value.todayDate === today.value ? stats.value.todaySessions + 1 : 1,
       todayDate: today.value,
+      focusStreak: nextFocusStreak,
     };
-    isBreak.value = true;
-    secondsLeft.value = breakMinutes.value * 60;
+
+    currentMode.value = nextFocusStreak % interval === 0 ? MODE_LONG_BREAK : MODE_SHORT_BREAK;
+    secondsLeft.value = totalSecondsForMode(currentMode.value);
   } else {
-    isBreak.value = false;
-    secondsLeft.value = workMinutes.value * 60;
+    currentMode.value = MODE_FOCUS;
+    secondsLeft.value = totalSecondsForMode(MODE_FOCUS);
   }
 });
 
-watch(workMinutes, (value) => {
-  if (!isRunning.value && !isBreak.value) {
-    secondsLeft.value = value * 60;
-  }
-});
+watch(
+  settings,
+  (value) => {
+    value.focusMinutes = normalizePositiveInteger(value.focusMinutes, 25, 1, 180);
+    value.shortBreakMinutes = normalizePositiveInteger(value.shortBreakMinutes, 5, 1, 60);
+    value.longBreakMinutes = normalizePositiveInteger(value.longBreakMinutes, 20, 1, 90);
+    value.longBreakInterval = normalizePositiveInteger(value.longBreakInterval, 4, 2, 12);
 
-watch(breakMinutes, (value) => {
-  if (!isRunning.value && isBreak.value) {
-    secondsLeft.value = value * 60;
+    if (!isRunning.value) {
+      secondsLeft.value = totalSecondsForMode(currentMode.value);
+    }
+  },
+  { deep: true }
+);
+
+watch(
+  currentMode,
+  () => {
+    if (!isRunning.value) {
+      secondsLeft.value = totalSecondsForMode(currentMode.value);
+    }
   }
-});
+);
+
+watch(
+  today,
+  (value) => {
+    if (stats.value.todayDate !== value && stats.value.todaySessions !== 0) {
+      pomodoroState.value = {
+        ...stats.value,
+        todayDate: value,
+        todaySessions: 0,
+      };
+    }
+  }
+);
 
 if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
   Notification.requestPermission();
@@ -223,8 +311,8 @@ function clearTimer() {
 
 function handleReset() {
   isRunning.value = false;
-  isBreak.value = false;
-  secondsLeft.value = workMinutes.value * 60;
+  currentMode.value = MODE_FOCUS;
+  secondsLeft.value = totalSecondsForMode(MODE_FOCUS);
 }
 
 function playNotification() {
@@ -247,13 +335,38 @@ function playNotification() {
     }, 500);
 
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      new Notification(isBreak.value ? '休息结束!' : '专注时间到!', {
-        body: isBreak.value ? '开始新一轮专注吧' : '休息一下吧',
+      new Notification(currentMode.value === MODE_FOCUS ? '专注时间到!' : '休息结束!', {
+        body: currentMode.value === MODE_FOCUS ? '休息一下吧' : '开始新一轮专注吧',
       });
     }
   } catch {
     // Ignore notification failures in unsupported environments.
   }
+}
+
+function normalizePositiveInteger(value, fallback, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(numeric)));
+}
+
+function getDurationMinutes(mode) {
+  if (mode === MODE_LONG_BREAK) {
+    return normalizePositiveInteger(settings.value.longBreakMinutes, 20, 1, 90);
+  }
+
+  if (mode === MODE_SHORT_BREAK) {
+    return normalizePositiveInteger(settings.value.shortBreakMinutes, 5, 1, 60);
+  }
+
+  return normalizePositiveInteger(settings.value.focusMinutes, 25, 1, 180);
+}
+
+function totalSecondsForMode(mode) {
+  return getDurationMinutes(mode) * 60;
 }
 </script>
 
@@ -286,6 +399,7 @@ function playNotification() {
   display: flex;
   gap: 16px;
   justify-content: center;
+  flex-wrap: wrap;
 }
 
 .setting-label {

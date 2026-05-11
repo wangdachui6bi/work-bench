@@ -6,17 +6,35 @@
           <LockOutlined style="margin-right: 10px;" />
           账号密码管理
         </a-typography-title>
-        <a-typography-text :style="{ color: 'var(--text-secondary)' }">
-          安全管理你的服务器和平台账号
-        </a-typography-text>
+        <div class="header-meta">
+          <a-typography-text :style="{ color: 'var(--text-secondary)' }">
+            安全管理你的服务器和平台账号
+          </a-typography-text>
+          <a-tag :color="syncConfig.enabled ? 'blue' : 'default'">
+            {{ syncConfig.enabled ? '云端数据库' : '仅本地保存' }}
+          </a-tag>
+        </div>
       </div>
-      <a-button type="primary" @click="openCreate">
-        <template #icon><PlusOutlined /></template>
-        添加账号
-      </a-button>
+      <div class="header-actions">
+        <a-button v-if="syncConfig.enabled" @click="handleRefresh" :loading="loading">
+          重新同步
+        </a-button>
+        <a-button type="primary" @click="openCreate">
+          <template #icon><PlusOutlined /></template>
+          添加账号
+        </a-button>
+      </div>
     </div>
 
     <a-card class="wb-card">
+      <a-alert
+        v-if="lastError"
+        type="warning"
+        show-icon
+        style="margin-bottom: 16px;"
+        :message="`云端同步失败，当前先使用本地缓存：${lastError}`"
+      />
+
       <div style="margin-bottom: 16px;">
         <a-input v-model:value="search" placeholder="搜索名称、主机、用户名、备注..." allow-clear style="max-width: 400px;">
           <template #prefix><SearchOutlined style="color: var(--text-muted);" /></template>
@@ -30,6 +48,7 @@
         v-else
         :data-source="filtered"
         :columns="columns"
+        :loading="loading"
         :pagination="{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }"
         row-key="id"
         size="middle"
@@ -42,6 +61,7 @@
       ok-text="保存"
       cancel-text="取消"
       :width="520"
+      :confirm-loading="submitting"
       @ok="handleSave"
       @cancel="closeModal"
     >
@@ -73,9 +93,15 @@
 
 <script setup>
 import { computed, h, reactive, ref } from 'vue';
+import dayjs from 'dayjs';
 import { message } from 'ant-design-vue';
 import { v4 as uuid } from 'uuid';
-import { usePersistentState } from '../store/useStore';
+import {
+  createPasswordRecord,
+  deletePasswordRecord,
+  updatePasswordRecord,
+  usePasswordVault,
+} from '../store/passwordCloudStore';
 import {
   CloudServerOutlined,
   CopyOutlined,
@@ -109,10 +135,11 @@ const emptyForm = () => ({
   remark: '',
 });
 
-const { state: passwords } = usePersistentState('passwords', []);
+const { passwords, loading, lastError, syncConfig, refreshPasswords } = usePasswordVault();
 const modalOpen = ref(false);
 const editItem = ref(null);
 const search = ref('');
+const submitting = ref(false);
 const visiblePwds = reactive({});
 const form = reactive(emptyForm());
 
@@ -126,11 +153,30 @@ const filtered = computed(() =>
   })
 );
 
+function formatUpdatedAt(value) {
+  if (!value) return '--';
+  const date = dayjs(value);
+  return date.isValid() ? date.format('YYYY-MM-DD HH:mm') : '--';
+}
+
+function compareText(a, b) {
+  return String(a || '').localeCompare(String(b || ''), 'zh-CN');
+}
+
+function compareUpdatedAt(a, b) {
+  return dayjs(a?.updatedAt).valueOf() - dayjs(b?.updatedAt).valueOf();
+}
+
 const columns = [
   {
     title: '名称',
     dataIndex: 'name',
     key: 'name',
+    sorter: (a, b) => {
+      const byName = compareText(a?.name, b?.name);
+      if (byName !== 0) return byName;
+      return compareText(a?.host, b?.host);
+    },
     customRender: ({ text, record }) =>
       h('div', { style: 'display:flex; align-items:center; gap:10px;' }, [
         h(CloudServerOutlined, { style: 'color: var(--accent-light);' }),
@@ -147,6 +193,7 @@ const columns = [
     dataIndex: 'category',
     key: 'category',
     width: 100,
+    sorter: (a, b) => compareText(catMap[a?.category]?.label || a?.category, catMap[b?.category]?.label || b?.category),
     customRender: ({ text }) =>
       catMap[text]
         ? h(
@@ -164,6 +211,7 @@ const columns = [
     dataIndex: 'username',
     key: 'username',
     width: 180,
+    sorter: (a, b) => compareText(a?.username, b?.username),
   },
   {
     title: '密码',
@@ -194,6 +242,17 @@ const columns = [
     dataIndex: 'remark',
     key: 'remark',
     ellipsis: true,
+    sorter: (a, b) => compareText(a?.remark, b?.remark),
+  },
+  {
+    title: '更新时间',
+    dataIndex: 'updatedAt',
+    key: 'updatedAt',
+    width: 160,
+    sorter: compareUpdatedAt,
+    defaultSortOrder: 'descend',
+    customRender: ({ text }) =>
+      h('span', { style: 'color: var(--text-secondary); font-size: 13px;' }, formatUpdatedAt(text)),
   },
   {
     title: '操作',
@@ -245,7 +304,7 @@ function closeModal() {
   resetForm();
 }
 
-function handleSave() {
+async function handleSave() {
   if (!form.name.trim()) return message.error('请输入名称');
   if (!form.category) return message.error('请选择分类');
   if (!form.username.trim()) return message.error('请输入用户名');
@@ -258,29 +317,45 @@ function handleSave() {
     updatedAt: new Date().toISOString(),
   };
 
-  if (editItem.value) {
-    passwords.value = passwords.value.map((item) =>
-      item.id === editItem.value.id ? { ...item, ...payload } : item
-    );
-    message.success('已更新');
-  } else {
-    passwords.value = [
-      {
+  submitting.value = true;
+
+  try {
+    if (editItem.value) {
+      await updatePasswordRecord(editItem.value.id, payload);
+      message.success('已更新');
+    } else {
+      await createPasswordRecord({
         id: uuid(),
         ...payload,
         createdAt: new Date().toISOString(),
-      },
-      ...passwords.value,
-    ];
-    message.success('已添加');
-  }
+      });
+      message.success('已添加');
+    }
 
-  closeModal();
+    closeModal();
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '保存失败');
+  } finally {
+    submitting.value = false;
+  }
 }
 
-function handleDelete(id) {
-  passwords.value = passwords.value.filter((item) => item.id !== id);
-  message.success('已删除');
+async function handleDelete(id) {
+  try {
+    await deletePasswordRecord(id);
+    message.success('已删除');
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '删除失败');
+  }
+}
+
+async function handleRefresh() {
+  try {
+    await refreshPasswords();
+    message.success('已完成同步');
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '同步失败');
+  }
 }
 
 function copyText(text) {
@@ -299,6 +374,19 @@ function togglePwd(id) {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 24px;
+}
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .wb-card {

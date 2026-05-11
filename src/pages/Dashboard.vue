@@ -105,6 +105,7 @@
 import { computed, markRaw } from 'vue';
 import dayjs from 'dayjs';
 import { usePersistentState } from '../store/useStore';
+import { usePasswordVault } from '../store/passwordCloudStore';
 import {
   ArrowRightOutlined,
   CheckSquareOutlined,
@@ -117,7 +118,7 @@ import {
 const emit = defineEmits(['navigate']);
 
 const { state: todos } = usePersistentState('todos', []);
-const { state: passwords } = usePersistentState('passwords', []);
+const { passwords } = usePasswordVault();
 const { state: notes } = usePersistentState('notes', []);
 const { state: bookmarks } = usePersistentState('bookmarks', []);
 
