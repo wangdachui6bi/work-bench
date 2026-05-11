@@ -105,6 +105,57 @@
               />
             </div>
           </div>
+
+          <div class="timer-advanced">
+            <div class="timer-advanced__header">
+              <div>
+                <a-typography-title :level="5" :style="{ margin: 0, color: 'var(--text-primary)' }">
+                  自动循环
+                </a-typography-title>
+                <a-typography-text :style="{ color: 'var(--text-secondary)' }">
+                  开启后会按照“专注 -> 休息 -> 专注”持续轮询，不再每轮手动点开始
+                </a-typography-text>
+              </div>
+              <a-switch v-model:checked="settings.autoCycle" :disabled="false" checked-children="开" un-checked-children="关" />
+            </div>
+
+            <div class="timer-reminders">
+              <div class="timer-reminders__item">
+                <a-typography-text class="setting-label">专注结束提醒标题</a-typography-text>
+                <a-input
+                  v-model:value="settings.focusEndTitle"
+                  :maxlength="40"
+                  placeholder="例如：这一轮完成了"
+                />
+              </div>
+              <div class="timer-reminders__item">
+                <a-typography-text class="setting-label">专注结束提醒内容</a-typography-text>
+                <a-textarea
+                  v-model:value="settings.focusEndBody"
+                  :maxlength="120"
+                  :rows="2"
+                  placeholder="例如：起身活动 5 分钟，准备下一轮"
+                />
+              </div>
+              <div class="timer-reminders__item">
+                <a-typography-text class="setting-label">休息结束提醒标题</a-typography-text>
+                <a-input
+                  v-model:value="settings.breakEndTitle"
+                  :maxlength="40"
+                  placeholder="例如：休息结束"
+                />
+              </div>
+              <div class="timer-reminders__item">
+                <a-typography-text class="setting-label">休息结束提醒内容</a-typography-text>
+                <a-textarea
+                  v-model:value="settings.breakEndBody"
+                  :maxlength="120"
+                  :rows="2"
+                  placeholder="例如：开始下一轮专注吧"
+                />
+              </div>
+            </div>
+          </div>
         </a-card>
       </a-col>
 
@@ -183,6 +234,11 @@ const { state: settingsState } = usePersistentState('pomodoro_settings', {
   shortBreakMinutes: 5,
   longBreakMinutes: 20,
   longBreakInterval: 4,
+  autoCycle: false,
+  focusEndTitle: '专注时间到',
+  focusEndBody: '休息一下吧，活动活动肩颈。',
+  breakEndTitle: '休息结束',
+  breakEndBody: '开始下一轮专注吧。',
 });
 
 const settings = settingsState;
@@ -224,9 +280,7 @@ watch(
   (running) => {
     clearTimer();
     if (running && secondsLeft.value > 0) {
-      timerId = window.setInterval(() => {
-        secondsLeft.value -= 1;
-      }, 1000);
+      startTimer();
     }
   },
   { immediate: true }
@@ -234,9 +288,6 @@ watch(
 
 watch(secondsLeft, (value) => {
   if (value !== 0 || !isRunning.value) return;
-
-  isRunning.value = false;
-  playNotification();
 
   if (currentMode.value === MODE_FOCUS) {
     const nextFocusStreak = focusStreak.value + 1;
@@ -249,11 +300,21 @@ watch(secondsLeft, (value) => {
       focusStreak: nextFocusStreak,
     };
 
-    currentMode.value = nextFocusStreak % interval === 0 ? MODE_LONG_BREAK : MODE_SHORT_BREAK;
-    secondsLeft.value = totalSecondsForMode(currentMode.value);
+    const nextMode = nextFocusStreak % interval === 0 ? MODE_LONG_BREAK : MODE_SHORT_BREAK;
+    switchToNextMode(nextMode);
+    playNotification({
+      title: sanitizeReminder(settings.value.focusEndTitle, '专注时间到'),
+      body: sanitizeReminder(
+        settings.value.focusEndBody,
+        nextMode === MODE_LONG_BREAK ? '这一轮完成了，进入长休息。' : '这一轮完成了，休息一下吧。'
+      ),
+    });
   } else {
-    currentMode.value = MODE_FOCUS;
-    secondsLeft.value = totalSecondsForMode(MODE_FOCUS);
+    switchToNextMode(MODE_FOCUS);
+    playNotification({
+      title: sanitizeReminder(settings.value.breakEndTitle, '休息结束'),
+      body: sanitizeReminder(settings.value.breakEndBody, '开始下一轮专注吧。'),
+    });
   }
 });
 
@@ -264,6 +325,11 @@ watch(
     value.shortBreakMinutes = normalizePositiveInteger(value.shortBreakMinutes, 5, 1, 60);
     value.longBreakMinutes = normalizePositiveInteger(value.longBreakMinutes, 20, 1, 90);
     value.longBreakInterval = normalizePositiveInteger(value.longBreakInterval, 4, 2, 12);
+    value.autoCycle = Boolean(value.autoCycle);
+    value.focusEndTitle = sanitizeReminder(value.focusEndTitle, '专注时间到');
+    value.focusEndBody = sanitizeReminder(value.focusEndBody, '休息一下吧，活动活动肩颈。');
+    value.breakEndTitle = sanitizeReminder(value.breakEndTitle, '休息结束');
+    value.breakEndBody = sanitizeReminder(value.breakEndBody, '开始下一轮专注吧。');
 
     if (!isRunning.value) {
       secondsLeft.value = totalSecondsForMode(currentMode.value);
@@ -315,7 +381,21 @@ function handleReset() {
   secondsLeft.value = totalSecondsForMode(MODE_FOCUS);
 }
 
-function playNotification() {
+function switchToNextMode(nextMode) {
+  const shouldAutoCycle = settings.value.autoCycle;
+
+  clearTimer();
+  isRunning.value = false;
+  currentMode.value = nextMode;
+  secondsLeft.value = totalSecondsForMode(nextMode);
+
+  if (shouldAutoCycle) {
+    isRunning.value = true;
+    startTimer();
+  }
+}
+
+function playNotification({ title, body }) {
   try {
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
     const ctx = new AudioContextCtor();
@@ -335,13 +415,25 @@ function playNotification() {
     }, 500);
 
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      new Notification(currentMode.value === MODE_FOCUS ? '专注时间到!' : '休息结束!', {
-        body: currentMode.value === MODE_FOCUS ? '休息一下吧' : '开始新一轮专注吧',
+      new Notification(title, {
+        body,
       });
     }
   } catch {
     // Ignore notification failures in unsupported environments.
   }
+}
+
+function sanitizeReminder(value, fallback) {
+  const nextValue = String(value ?? '').trim();
+  return nextValue || fallback;
+}
+
+function startTimer() {
+  clearTimer();
+  timerId = window.setInterval(() => {
+    secondsLeft.value -= 1;
+  }, 1000);
 }
 
 function normalizePositiveInteger(value, fallback, min, max) {
@@ -402,6 +494,31 @@ function totalSecondsForMode(mode) {
   flex-wrap: wrap;
 }
 
+.timer-advanced {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+.timer-advanced__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.timer-reminders {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.timer-reminders__item {
+  min-width: 0;
+}
+
 .setting-label {
   display: block;
   color: var(--text-muted);
@@ -417,5 +534,15 @@ function totalSecondsForMode(mode) {
   color: var(--text-secondary);
   padding-left: 20px;
   line-height: 2;
+}
+
+@media (max-width: 768px) {
+  .timer-advanced__header {
+    flex-direction: column;
+  }
+
+  .timer-reminders {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
