@@ -42,11 +42,11 @@
             <a-space :size="16">
               <a-button v-if="!isRunning" type="primary" size="large" style="width: 120px;" @click="isRunning = true">
                 <template #icon><PlayCircleOutlined /></template>
-                {{ secondsLeft === totalSeconds ? '开始' : '继续' }}
+                {{ primaryActionLabel }}
               </a-button>
               <a-button v-else size="large" style="width: 120px;" @click="isRunning = false">
                 <template #icon><PauseCircleOutlined /></template>
-                暂停
+                {{ primaryActionLabel }}
               </a-button>
               <a-button size="large" @click="handleReset">
                 <template #icon><ReloadOutlined /></template>
@@ -118,6 +118,9 @@
               </div>
               <a-switch v-model:checked="settings.autoCycle" :disabled="false" checked-children="开" un-checked-children="关" />
             </div>
+            <a-typography-text class="timer-advanced__hint">
+              {{ settings.autoCycle ? '当前已开启自动循环，专注结束后会自动进入休息并继续计时。' : '当前是手动模式，专注结束后需要你手动点“开始休息”或“开始专注”。' }}
+            </a-typography-text>
 
             <div class="timer-reminders">
               <div class="timer-reminders__item">
@@ -206,7 +209,8 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { message } from 'ant-design-vue';
 import {
   ClockCircleOutlined,
   CoffeeOutlined,
@@ -220,6 +224,8 @@ import { usePersistentState } from '../store/useStore';
 const MODE_FOCUS = 'focus';
 const MODE_SHORT_BREAK = 'shortBreak';
 const MODE_LONG_BREAK = 'longBreak';
+const SETTINGS_STORE_KEY = 'pomodoro_settings';
+const RUNTIME_STORE_KEY = 'pomodoro_runtime';
 
 const { state: pomodoroState } = usePersistentState('pomodoro_stats', {
   totalSessions: 0,
@@ -229,23 +235,34 @@ const { state: pomodoroState } = usePersistentState('pomodoro_stats', {
   focusStreak: 0,
 });
 
-const { state: settingsState } = usePersistentState('pomodoro_settings', {
+const { state: settingsState, loaded: settingsLoaded } = usePersistentState('pomodoro_settings', {
   focusMinutes: 25,
   shortBreakMinutes: 5,
   longBreakMinutes: 20,
   longBreakInterval: 4,
-  autoCycle: false,
+  autoCycle: true,
   focusEndTitle: '专注时间到',
   focusEndBody: '休息一下吧，活动活动肩颈。',
   breakEndTitle: '休息结束',
   breakEndBody: '开始下一轮专注吧。',
 });
 
+const { state: runtimeState, loaded: runtimeLoaded } = usePersistentState('pomodoro_runtime', {
+  currentMode: MODE_FOCUS,
+  secondsLeft: 25 * 60,
+  isRunning: false,
+  savedAt: 0,
+  targetEndsAt: 0,
+});
+
 const settings = settingsState;
 const currentMode = ref(MODE_FOCUS);
-const secondsLeft = ref(settings.value.focusMinutes * 60);
+const secondsLeft = ref(25 * 60);
 const isRunning = ref(false);
+const hasHydratedSettings = ref(false);
+const hasHydratedRuntime = ref(false);
 let timerId = null;
+let lastTickAt = 0;
 
 const stats = computed(() => pomodoroState.value);
 const today = computed(() => new Date().toISOString().split('T')[0]);
@@ -256,7 +273,20 @@ const currentModeLabel = computed(() => {
   if (currentMode.value === MODE_SHORT_BREAK) return '短休息时间';
   return '专注时间';
 });
-const totalSeconds = computed(() => getDurationMinutes(currentMode.value) * 60);
+const primaryActionLabel = computed(() => {
+  if (isRunning.value) {
+    return '暂停';
+  }
+
+  if (secondsLeft.value !== totalSeconds.value) {
+    return '继续';
+  }
+
+  if (currentMode.value === MODE_LONG_BREAK) return '开始长休息';
+  if (currentMode.value === MODE_SHORT_BREAK) return '开始休息';
+  return '开始专注';
+});
+const totalSeconds = computed(() => totalSecondsForMode(currentMode.value));
 const progress = computed(() => {
   if (totalSeconds.value <= 0) return 0;
   return ((totalSeconds.value - secondsLeft.value) / totalSeconds.value) * 100;
@@ -274,6 +304,22 @@ const sessionsUntilLongBreak = computed(() => {
   const completed = focusStreak.value % interval;
   return completed === 0 ? interval : interval - completed;
 });
+
+watch(
+  [runtimeLoaded, settingsLoaded],
+  async ([runtimeReady, settingsReady]) => {
+    if (settingsReady && !hasHydratedSettings.value) {
+      await hydrateSettings();
+      hasHydratedSettings.value = true;
+    }
+
+    if (!runtimeReady || !settingsReady || !hasHydratedSettings.value || hasHydratedRuntime.value) return;
+
+    await hydrateRuntime();
+    hasHydratedRuntime.value = true;
+  },
+  { immediate: true }
+);
 
 watch(
   isRunning,
@@ -309,13 +355,14 @@ watch(secondsLeft, (value) => {
         nextMode === MODE_LONG_BREAK ? '这一轮完成了，进入长休息。' : '这一轮完成了，休息一下吧。'
       ),
     });
-  } else {
-    switchToNextMode(MODE_FOCUS);
-    playNotification({
-      title: sanitizeReminder(settings.value.breakEndTitle, '休息结束'),
-      body: sanitizeReminder(settings.value.breakEndBody, '开始下一轮专注吧。'),
-    });
+    return;
   }
+
+  switchToNextMode(MODE_FOCUS);
+  playNotification({
+    title: sanitizeReminder(settings.value.breakEndTitle, '休息结束'),
+    body: sanitizeReminder(settings.value.breakEndBody, '开始下一轮专注吧。'),
+  });
 });
 
 watch(
@@ -325,26 +372,21 @@ watch(
     value.shortBreakMinutes = normalizePositiveInteger(value.shortBreakMinutes, 5, 1, 60);
     value.longBreakMinutes = normalizePositiveInteger(value.longBreakMinutes, 20, 1, 90);
     value.longBreakInterval = normalizePositiveInteger(value.longBreakInterval, 4, 2, 12);
-    value.autoCycle = Boolean(value.autoCycle);
+    value.autoCycle = value.autoCycle !== false;
     value.focusEndTitle = sanitizeReminder(value.focusEndTitle, '专注时间到');
     value.focusEndBody = sanitizeReminder(value.focusEndBody, '休息一下吧，活动活动肩颈。');
     value.breakEndTitle = sanitizeReminder(value.breakEndTitle, '休息结束');
     value.breakEndBody = sanitizeReminder(value.breakEndBody, '开始下一轮专注吧。');
 
-    if (!isRunning.value) {
+    if (hasHydratedRuntime.value && !isRunning.value) {
       secondsLeft.value = totalSecondsForMode(currentMode.value);
+    }
+
+    if (hasHydratedSettings.value) {
+      void persistSettingsSnapshot(buildSettingsSnapshot(value));
     }
   },
   { deep: true }
-);
-
-watch(
-  currentMode,
-  () => {
-    if (!isRunning.value) {
-      secondsLeft.value = totalSecondsForMode(currentMode.value);
-    }
-  }
 );
 
 watch(
@@ -360,19 +402,161 @@ watch(
   }
 );
 
+watch(
+  [currentMode, secondsLeft, isRunning],
+  ([modeValue, remainingValue, runningValue]) => {
+    if (!hasHydratedRuntime.value) return;
+
+    const safeRemainingValue = Math.max(0, Number(remainingValue) || 0);
+    void persistRuntimeSnapshot({
+      currentMode: normalizeMode(modeValue),
+      secondsLeft: safeRemainingValue,
+      isRunning: Boolean(runningValue),
+      savedAt: Date.now(),
+      targetEndsAt: runningValue ? Date.now() + safeRemainingValue * 1000 : 0,
+    });
+  }
+);
+
 if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
   Notification.requestPermission();
 }
 
+onMounted(() => {
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('focus', handleWindowFocus);
+  window.addEventListener('blur', persistCurrentRuntime);
+  window.addEventListener('blur', persistCurrentSettings);
+  window.addEventListener('beforeunload', persistCurrentRuntime);
+  window.addEventListener('beforeunload', persistCurrentSettings);
+});
+
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
+  window.removeEventListener('focus', handleWindowFocus);
+  window.removeEventListener('blur', persistCurrentRuntime);
+  window.removeEventListener('blur', persistCurrentSettings);
+  window.removeEventListener('beforeunload', persistCurrentRuntime);
+  window.removeEventListener('beforeunload', persistCurrentSettings);
+  persistCurrentSettings();
+  persistCurrentRuntime();
   clearTimer();
 });
+
+async function hydrateSettings() {
+  const storedSnapshot = await loadSettingsSnapshot();
+  const snapshot = storedSnapshot || settings.value || {};
+
+  settings.value = buildSettingsSnapshot({
+    focusMinutes: snapshot.focusMinutes,
+    shortBreakMinutes: snapshot.shortBreakMinutes,
+    longBreakMinutes: snapshot.longBreakMinutes,
+    longBreakInterval: snapshot.longBreakInterval,
+    autoCycle: snapshot.autoCycle,
+    focusEndTitle: snapshot.focusEndTitle,
+    focusEndBody: snapshot.focusEndBody,
+    breakEndTitle: snapshot.breakEndTitle,
+    breakEndBody: snapshot.breakEndBody,
+  });
+}
+
+async function hydrateRuntime() {
+  const storedSnapshot = await loadRuntimeSnapshot();
+  const snapshot = storedSnapshot || runtimeState.value || {};
+  const restored = restoreRuntimeState({
+    currentMode: normalizeMode(snapshot.currentMode),
+    secondsLeft: normalizePositiveInteger(
+      snapshot.secondsLeft,
+      totalSecondsForMode(normalizeMode(snapshot.currentMode)),
+      0,
+      totalSecondsForMode(normalizeMode(snapshot.currentMode))
+    ),
+    isRunning: Boolean(snapshot.isRunning),
+    savedAt: Number(snapshot.savedAt || 0),
+    targetEndsAt: Number(snapshot.targetEndsAt || 0),
+  });
+
+  currentMode.value = restored.currentMode;
+  secondsLeft.value = restored.secondsLeft;
+  isRunning.value = restored.isRunning;
+  persistCurrentRuntime();
+}
+
+function restoreRuntimeState(snapshot) {
+  let restoredMode = snapshot.currentMode;
+  let restoredSeconds = Math.max(0, Number(snapshot.secondsLeft) || 0);
+  let restoredRunning = Boolean(snapshot.isRunning);
+  const savedAt = Number(snapshot.savedAt || 0);
+  const targetEndsAt = Number(snapshot.targetEndsAt || 0);
+
+  if (!restoredRunning || savedAt <= 0) {
+    return {
+      currentMode: restoredMode,
+      secondsLeft: restoredSeconds || totalSecondsForMode(restoredMode),
+      isRunning: false,
+    };
+  }
+
+  if (targetEndsAt > Date.now()) {
+    restoredSeconds = Math.max(0, Math.ceil((targetEndsAt - Date.now()) / 1000));
+  }
+
+  let elapsedSeconds = Math.max(0, Math.floor((Date.now() - savedAt) / 1000));
+  let nextStats = { ...stats.value };
+
+  while (elapsedSeconds >= restoredSeconds && restoredSeconds > 0) {
+    elapsedSeconds -= restoredSeconds;
+
+    if (restoredMode === MODE_FOCUS) {
+      const nextFocusStreak = Number(nextStats.focusStreak || 0) + 1;
+      const interval = normalizePositiveInteger(settings.value.longBreakInterval, 4, 2, 12);
+      nextStats = {
+        totalSessions: Number(nextStats.totalSessions || 0) + 1,
+        totalMinutes: Number(nextStats.totalMinutes || 0) + normalizePositiveInteger(settings.value.focusMinutes, 25, 1, 180),
+        todaySessions: nextStats.todayDate === today.value ? Number(nextStats.todaySessions || 0) + 1 : 1,
+        todayDate: today.value,
+        focusStreak: nextFocusStreak,
+      };
+      restoredMode = nextFocusStreak % interval === 0 ? MODE_LONG_BREAK : MODE_SHORT_BREAK;
+    } else {
+      restoredMode = MODE_FOCUS;
+    }
+
+    restoredSeconds = totalSecondsForMode(restoredMode);
+
+    if (!settings.value.autoCycle) {
+      restoredRunning = false;
+      break;
+    }
+  }
+
+  if (
+    nextStats.totalSessions !== stats.value.totalSessions ||
+    nextStats.totalMinutes !== stats.value.totalMinutes ||
+    nextStats.todaySessions !== stats.value.todaySessions ||
+    nextStats.todayDate !== stats.value.todayDate ||
+    nextStats.focusStreak !== stats.value.focusStreak
+  ) {
+    pomodoroState.value = nextStats;
+  }
+
+  if (restoredRunning) {
+    restoredSeconds = Math.max(1, restoredSeconds - elapsedSeconds);
+  }
+
+  return {
+    currentMode: restoredMode,
+    secondsLeft: restoredSeconds || totalSecondsForMode(restoredMode),
+    isRunning: restoredRunning,
+  };
+}
 
 function clearTimer() {
   if (timerId) {
     window.clearInterval(timerId);
     timerId = null;
   }
+  lastTickAt = 0;
 }
 
 function handleReset() {
@@ -391,8 +575,10 @@ function switchToNextMode(nextMode) {
 
   if (shouldAutoCycle) {
     isRunning.value = true;
-    startTimer();
+    return;
   }
+
+  message.info(nextMode === MODE_FOCUS ? '休息已结束，点击“开始专注”进入下一轮。' : '已切换到休息时间，点击“开始休息”继续。');
 }
 
 function playNotification({ title, body }) {
@@ -431,9 +617,36 @@ function sanitizeReminder(value, fallback) {
 
 function startTimer() {
   clearTimer();
-  timerId = window.setInterval(() => {
-    secondsLeft.value -= 1;
-  }, 1000);
+  lastTickAt = Date.now();
+  timerId = window.setInterval(syncTimerWithClock, 250);
+}
+
+function syncTimerWithClock() {
+  if (!isRunning.value) return;
+
+  const now = Date.now();
+  if (!lastTickAt) {
+    lastTickAt = now;
+    return;
+  }
+
+  const elapsedSeconds = Math.floor((now - lastTickAt) / 1000);
+  if (elapsedSeconds <= 0) return;
+
+  lastTickAt += elapsedSeconds * 1000;
+  secondsLeft.value = Math.max(0, secondsLeft.value - elapsedSeconds);
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    syncTimerWithClock();
+    persistCurrentRuntime();
+  }
+}
+
+function handleWindowFocus() {
+  syncTimerWithClock();
+  persistCurrentRuntime();
 }
 
 function normalizePositiveInteger(value, fallback, min, max) {
@@ -443,6 +656,14 @@ function normalizePositiveInteger(value, fallback, min, max) {
   }
 
   return Math.min(max, Math.max(min, Math.round(numeric)));
+}
+
+function normalizeMode(value) {
+  if (value === MODE_SHORT_BREAK || value === MODE_LONG_BREAK) {
+    return value;
+  }
+
+  return MODE_FOCUS;
 }
 
 function getDurationMinutes(mode) {
@@ -459,6 +680,71 @@ function getDurationMinutes(mode) {
 
 function totalSecondsForMode(mode) {
   return getDurationMinutes(mode) * 60;
+}
+
+function createRuntimeSnapshot() {
+  const safeRemaining = Math.max(0, Number(secondsLeft.value) || 0);
+  return {
+    currentMode: normalizeMode(currentMode.value),
+    secondsLeft: safeRemaining,
+    isRunning: Boolean(isRunning.value),
+    savedAt: Date.now(),
+    targetEndsAt: isRunning.value ? Date.now() + safeRemaining * 1000 : 0,
+  };
+}
+
+function buildSettingsSnapshot(source = {}) {
+  return {
+    focusMinutes: normalizePositiveInteger(source.focusMinutes, 25, 1, 180),
+    shortBreakMinutes: normalizePositiveInteger(source.shortBreakMinutes, 5, 1, 60),
+    longBreakMinutes: normalizePositiveInteger(source.longBreakMinutes, 20, 1, 90),
+    longBreakInterval: normalizePositiveInteger(source.longBreakInterval, 4, 2, 12),
+    autoCycle: source.autoCycle !== false,
+    focusEndTitle: sanitizeReminder(source.focusEndTitle, '专注时间到'),
+    focusEndBody: sanitizeReminder(source.focusEndBody, '休息一下吧，活动活动肩颈。'),
+    breakEndTitle: sanitizeReminder(source.breakEndTitle, '休息结束'),
+    breakEndBody: sanitizeReminder(source.breakEndBody, '开始下一轮专注吧。'),
+  };
+}
+
+function persistCurrentRuntime() {
+  if (!hasHydratedRuntime.value) return;
+  void persistRuntimeSnapshot(createRuntimeSnapshot());
+}
+
+function persistCurrentSettings() {
+  if (!hasHydratedSettings.value) return;
+  void persistSettingsSnapshot(buildSettingsSnapshot(settings.value));
+}
+
+async function loadSettingsSnapshot() {
+  if (window.electronAPI?.store?.get) {
+    return window.electronAPI.store.get(SETTINGS_STORE_KEY);
+  }
+
+  return settings.value;
+}
+
+async function loadRuntimeSnapshot() {
+  if (window.electronAPI?.store?.get) {
+    return window.electronAPI.store.get(RUNTIME_STORE_KEY);
+  }
+
+  return runtimeState.value;
+}
+
+async function persistRuntimeSnapshot(snapshot) {
+  runtimeState.value = snapshot;
+
+  if (window.electronAPI?.store?.set) {
+    await window.electronAPI.store.set(RUNTIME_STORE_KEY, snapshot);
+  }
+}
+
+async function persistSettingsSnapshot(snapshot) {
+  if (window.electronAPI?.store?.set) {
+    await window.electronAPI.store.set(SETTINGS_STORE_KEY, snapshot);
+  }
 }
 </script>
 
@@ -507,6 +793,12 @@ function totalSecondsForMode(mode) {
   align-items: flex-start;
   gap: 16px;
   margin-bottom: 20px;
+}
+
+.timer-advanced__hint {
+  display: block;
+  margin-bottom: 18px;
+  color: var(--text-secondary);
 }
 
 .timer-reminders {
